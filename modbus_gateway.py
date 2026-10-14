@@ -36,23 +36,27 @@ logger = logging.getLogger("PLC-Gateway")
 
 class ModbusPLCBridge:
     """Gestiona una única conexión persistente y serializada para Modbus hacia el PLC."""
-    def __init__(self, host: str, port: int, timeout: float, reconnect_delay: float):
+    def __init__(self, host: str, port: int, timeout: float = 1.5, reconnect_delay: float = 2.0):
         self.host = host
         self.port = port
-        self.timeout = timeout
+        self.timeout = min(timeout, 2.0)  # Evitar esperas excesivas en escaneos
         self.reconnect_delay = reconnect_delay
         self.reader: Optional[asyncio.StreamReader] = None
         self.writer: Optional[asyncio.StreamWriter] = None
         self.lock = asyncio.Lock()
         self._connected = False
+        self._last_fail_time = 0.0
 
     async def connect(self) -> bool:
         if self._connected and self.writer and not self.writer.is_closing():
             return True
 
+        # Circuit breaker: si falló hace menos de 2 segundos, no esperar timeout de nuevo
+        if time.time() - self._last_fail_time < 2.0:
+            return False
+
         self.close()
         try:
-            logger.info(f"[Modbus:502] Conectando al PLC real en {self.host}:{self.port}...")
             self.reader, self.writer = await asyncio.wait_for(
                 asyncio.open_connection(self.host, self.port),
                 timeout=self.timeout
@@ -61,7 +65,8 @@ class ModbusPLCBridge:
             logger.info(f"[Modbus:502] Conexión establecida con el PLC real ({self.host}:{self.port})")
             return True
         except Exception as e:
-            logger.error(f"[Modbus:502] Error conectando al PLC real ({self.host}:{self.port}): {e}")
+            self._last_fail_time = time.time()
+            logger.warning(f"[Modbus:502] PLC no disponible ({self.host}:{self.port}): {e}")
             self._connected = False
             return False
 
@@ -76,59 +81,54 @@ class ModbusPLCBridge:
         self._connected = False
 
     async def send_and_receive(self, request_packet: bytes) -> Optional[bytes]:
-        """Envía un paquete al PLC y espera su respuesta con Mutex Lock."""
+        """Envía un paquete al PLC y espera su respuesta con Mutex Lock y respuesta rápida."""
         async with self.lock:
-            for attempt in range(2):
-                if not self._connected:
-                    connected = await self.connect()
-                    if not connected:
-                        if attempt == 0:
-                            await asyncio.sleep(self.reconnect_delay)
-                            continue
-                        return None
-
-                try:
-                    self.writer.write(request_packet)
-                    await self.writer.drain()
-
-                    mbap_header = await asyncio.wait_for(
-                        self.reader.readexactly(7),
-                        timeout=self.timeout
-                    )
-                    _, _, length, _ = struct.unpack(">HHHB", mbap_header)
-
-                    if length < 1:
-                        raise ValueError(f"Longitud MBAP inválida: {length}")
-
-                    pdu = await asyncio.wait_for(
-                        self.reader.readexactly(length - 1),
-                        timeout=self.timeout
-                    )
-                    return mbap_header + pdu
-
-                except (asyncio.TimeoutError, ConnectionResetError, BrokenPipeError, asyncio.IncompleteReadError) as e:
-                    logger.warning(f"[Modbus:502] Fallo en comunicación con el PLC (intento {attempt+1}/2): {e}")
-                    self.close()
-                    if attempt == 0:
-                        await asyncio.sleep(0.5)
-                        continue
+            if not self._connected:
+                connected = await self.connect()
+                if not connected:
                     return None
-                except Exception as e:
-                    logger.error(f"[Modbus:502] Error inesperado: {e}")
-                    self.close()
-                    return None
-            return None
+
+            try:
+                self.writer.write(request_packet)
+                await self.writer.drain()
+
+                mbap_header = await asyncio.wait_for(
+                    self.reader.readexactly(7),
+                    timeout=self.timeout
+                )
+                _, _, length, _ = struct.unpack(">HHHB", mbap_header)
+
+                if length < 1:
+                    raise ValueError(f"Longitud MBAP inválida: {length}")
+
+                pdu = await asyncio.wait_for(
+                    self.reader.readexactly(length - 1),
+                    timeout=self.timeout
+                )
+                return mbap_header + pdu
+
+            except (asyncio.TimeoutError, ConnectionResetError, BrokenPipeError, asyncio.IncompleteReadError) as e:
+                self._last_fail_time = time.time()
+                logger.warning(f"[Modbus:502] Comunicación perdida con el PLC: {e}")
+                self.close()
+                return None
+            except Exception as e:
+                self._last_fail_time = time.time()
+                logger.error(f"[Modbus:502] Error inesperado: {e}")
+                self.close()
+                return None
 
 
 class StreamProxyService:
     """Proxy bidireccional de flujos TCP con control de concurrencia (para puertos 102 y 80)."""
-    def __init__(self, name: str, listen_port: int, target_host: str, target_port: int, max_connections: int, timeout: float = 5.0):
+    def __init__(self, name: str, listen_port: int, target_host: str, target_port: int, max_connections: int, timeout: float = 1.5):
         self.name = name
         self.listen_port = listen_port
         self.target_host = target_host
         self.target_port = target_port
         self.semaphore = asyncio.Semaphore(max_connections)
-        self.timeout = timeout
+        self.timeout = min(timeout, 2.0)
+        self._last_fail_time = 0.0
         self.server: Optional[asyncio.Server] = None
         self.current_connections = 0
 
@@ -151,6 +151,16 @@ class StreamProxyService:
 
     async def handle_client(self, client_reader: asyncio.StreamReader, client_writer: asyncio.StreamWriter):
         peer = client_writer.get_extra_info("peername")
+
+        # Fast-fail si el PLC no está accesible recientemente
+        if time.time() - self._last_fail_time < 2.0:
+            try:
+                client_writer.close()
+                await client_writer.wait_closed()
+            except Exception:
+                pass
+            return
+
         self.current_connections += 1
         logger.info(f"[{self.name}] Conexión entrante desde {peer} (Activas: {self.current_connections})")
 
@@ -163,6 +173,7 @@ class StreamProxyService:
                         timeout=self.timeout
                     )
                 except Exception as e:
+                    self._last_fail_time = time.time()
                     logger.warning(f"[{self.name}] No se pudo conectar al PLC ({self.target_host}:{self.target_port}): {e}")
                     return
 
