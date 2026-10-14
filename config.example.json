@@ -1,13 +1,22 @@
 {
   "server": {
     "host": "0.0.0.0",
-    "port": 502
+    "modbus_port": 502,
+    "s7_port": 102,
+    "http_port": 80
   },
   "plc": {
     "host": "192.168.1.100",
-    "port": 502,
+    "modbus_port": 502,
+    "s7_port": 102,
+    "http_port": 80,
     "timeout_seconds": 3.0,
     "reconnect_delay_seconds": 2.0
+  },
+  "features": {
+    "enable_modbus_502": true,
+    "enable_s7_102": true,
+    "enable_http_80": true
   },
   "siemens_identity": {
     "intercept_fc43": true,
@@ -22,6 +31,8 @@
   "performance": {
     "cache_enabled": false,
     "cache_ttl_ms": 250,
-    "max_client_connections": 100
+    "max_modbus_connections": 100,
+    "max_s7_connections": 8,
+    "max_http_connections": 15
   }
 }
