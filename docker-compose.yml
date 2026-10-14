@@ -1,0 +1,10 @@
+version: '3.8'
+
+services:
+  modbus-gateway:
+    build: .
+    container_name: modbus-siemens-proxy
+    restart: always
+    network_mode: "host" # Recomendado para entornos industriales para no alterar IPs de origen
+    volumes:
+      - ./config.json:/app/config.json:ro

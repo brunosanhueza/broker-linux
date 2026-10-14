@@ -1,0 +1,27 @@
+{
+  "server": {
+    "host": "0.0.0.0",
+    "port": 502
+  },
+  "plc": {
+    "host": "192.168.1.100",
+    "port": 502,
+    "timeout_seconds": 3.0,
+    "reconnect_delay_seconds": 2.0
+  },
+  "siemens_identity": {
+    "intercept_fc43": true,
+    "vendor_name": "SIEMENS AG",
+    "product_code": "SIMATIC S7-1200",
+    "revision": "V4.5.1",
+    "vendor_url": "http://www.siemens.com",
+    "product_name": "CPU 1214C DC/DC/DC",
+    "model_name": "6ES7 214-1AG40-0XB0",
+    "user_application_name": "PLC-SIEMENS-LINEA1"
+  },
+  "performance": {
+    "cache_enabled": false,
+    "cache_ttl_ms": 250,
+    "max_client_connections": 100
+  }
+}

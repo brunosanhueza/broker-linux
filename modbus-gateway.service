@@ -1,0 +1,17 @@
+[Unit]
+Description=Modbus TCP Siemens Gateway & Proxy
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/modbus-gateway
+ExecStart=/usr/bin/python3 -u /opt/modbus-gateway/modbus_gateway.py /opt/modbus-gateway/config.json
+Restart=always
+RestartSec=5s
+
+# Permisos para escuchar en puertos privilegiados (< 1024) como el 502
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+[Install]
+WantedBy=multi-user.target
